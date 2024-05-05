@@ -37,7 +37,7 @@ for _d in (RAW_DIR, PROCESSED_DIR, CACHE_DIR, ARTIFACTS_DIR, FIGURES_DIR):
 # ---------------------------------------------------------------------------
 # Seasons and the walk-forward splits
 # ---------------------------------------------------------------------------
-SEASONS = [2023, 2024, 2025, 2026]
+SEASONS = [2023, 2024]
 
 
 @dataclass(frozen=True)
