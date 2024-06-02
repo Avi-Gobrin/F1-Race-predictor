@@ -72,6 +72,43 @@ def cmd_evaluate(args: argparse.Namespace) -> None:
     print(nonzero.to_string())
 
 
+def cmd_report(args: argparse.Namespace) -> None:
+    """Run the full evaluation and write all CSVs and figures to reports/."""
+    from .models import factor_analysis, pca_explained_variance
+    from .plots import (
+        plot_factor_loadings,
+        plot_lasso_coefficients,
+        plot_walk_forward_metrics,
+    )
+
+    feats = _load_features()
+    report = run_walk_forward(feats, target=args.target)
+    if report.metrics.empty:
+        print("Not enough seasons with data to report.")
+        return
+
+    REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+    report.metrics.to_csv(REPORTS_DIR / "walk_forward_metrics.csv", index=False)
+
+    last_season = max(report.coefficients)
+    coef = report.coefficients[last_season]
+    coef.rename("coefficient").to_csv(REPORTS_DIR / "lasso_coefficients.csv")
+
+    X, _ = split_Xy(feats, target="won")
+    loadings = factor_analysis(X)
+    loadings.to_csv(REPORTS_DIR / "factor_loadings.csv")
+    pca_explained_variance(X).to_csv(REPORTS_DIR / "pca_explained_variance.csv")
+
+    paths = [
+        plot_walk_forward_metrics(report.metrics),
+        plot_lasso_coefficients(coef),
+        plot_factor_loadings(loadings),
+    ]
+    print("Wrote CSVs to", REPORTS_DIR)
+    for p in paths:
+        print("  figure:", p)
+
+
 def cmd_analyze(args: argparse.Namespace) -> None:
     feats = _load_features()
     X, _ = split_Xy(feats, target="won")
@@ -120,6 +157,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("analyze", help="Factor analysis / PCA of the features.")
     a.set_defaults(func=cmd_analyze)
+
+    rep = sub.add_parser("report", help="Write all metrics CSVs and figures.")
+    rep.add_argument("--target", choices=["won", "podium"], default="won")
+    rep.set_defaults(func=cmd_report)
 
     pr = sub.add_parser("predict", help="Predict win probabilities for one race.")
     pr.add_argument("--season", type=int, required=True)
