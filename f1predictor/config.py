@@ -21,7 +21,7 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = PROJECT_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
@@ -37,7 +37,7 @@ for _d in (RAW_DIR, PROCESSED_DIR, CACHE_DIR, ARTIFACTS_DIR, FIGURES_DIR):
 # ---------------------------------------------------------------------------
 # Seasons and the walk-forward splits
 # ---------------------------------------------------------------------------
-SEASONS = [2023, 2024, 2025]
+SEASONS = [2023, 2024, 2025, 2026]
 
 
 @dataclass(frozen=True)
