@@ -1,16 +1,30 @@
-"""Data ingestion from the official F1 timing API via FastF1.
+"""Data ingestion from the official F1 timing feed via FastF1.
 
 This module turns raw sessions into a single tidy table with one row per
 (season, round, driver). Downstream feature engineering and modelling never
 touch FastF1 directly; they consume the DataFrame produced here.
 
-Everything is cached twice over:
+Data source note
+----------------
+The historical Ergast API (and its Jolpica mirror) is the usual source for
+classified results, grid positions, points, and status. As of mid-2026 those
+endpoints are unreliable (Ergast is decommissioned; the Jolpica mirror is
+heavily rate-limited). This module therefore derives everything it needs from
+the live timing feed, which FastF1 reads directly:
 
-* FastF1 keeps its own on-disk cache of raw API responses (``CACHE_DIR``).
-* We additionally persist the assembled per-season tables as parquet in
-  ``RAW_DIR`` so repeated runs do not re-parse sessions.
+* finishing order        -> race session results (timing classification)
+* qualifying / grid       -> qualifying session results (grid uses quali as a
+                             proxy; grid penalties are not reflected)
+* points                  -> computed from finishing position with the standard
+                             post-2010 scoring table (fastest-lap bonus ignored)
+* did-not-finish (DNF)    -> a driver who completed under 90% of the winner's
+                             lap count is treated as not classified, matching
+                             the FIA classification rule
+* weather                 -> race session weather stream, summarized per race
 
-Network access is only needed the first time a season is requested.
+Everything is cached: FastF1 keeps its own on-disk cache of raw API responses,
+and assembled per-season tables are persisted as parquet so reruns avoid the
+network.
 """
 
 from __future__ import annotations
@@ -24,7 +38,13 @@ from .config import CACHE_DIR, RAW_DIR
 
 logger = logging.getLogger(__name__)
 
-# Columns of the canonical results table.
+# Standard F1 points for finishing positions 1..10 (post-2010 system).
+POINTS_TABLE = {1: 25, 2: 18, 3: 15, 4: 12, 5: 10, 6: 8, 7: 6, 8: 4, 9: 2, 10: 1}
+
+# A driver completing fewer than this fraction of the winner's laps is treated
+# as not classified (the FIA 90% rule), which we use as the DNF flag.
+CLASSIFIED_LAP_FRACTION = 0.90
+
 RESULT_COLUMNS = [
     "season",
     "round",
@@ -49,13 +69,9 @@ RESULT_COLUMNS = [
 
 
 def _import_fastf1():
-    """Import FastF1 lazily so the package imports without the dependency.
-
-    Keeping the import inside the functions means unit tests that operate on
-    synthetic frames do not require network access or the FastF1 install.
-    """
+    """Import and configure FastF1 lazily (keeps unit tests dependency-free)."""
     try:
-        import fastf1  # noqa: WPS433 (intentional local import)
+        import fastf1
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise ImportError(
             "FastF1 is required for data ingestion. Install it with "
@@ -65,8 +81,16 @@ def _import_fastf1():
     return fastf1
 
 
+def _points_for_position(position: float) -> float:
+    """Standard championship points for a finishing position."""
+    try:
+        return float(POINTS_TABLE.get(int(position), 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _safe_int(value) -> float:
-    """Coerce a possibly-missing position/grid value to a float (NaN if blank)."""
+    """Coerce a possibly-missing position/number to a float (NaN if blank)."""
     try:
         if value is None or value == "" or pd.isna(value):
             return float("nan")
@@ -75,8 +99,16 @@ def _safe_int(value) -> float:
         return float("nan")
 
 
+def _completed_laps(session) -> pd.Series:
+    """Laps completed per driver abbreviation (max lap number reached)."""
+    laps = getattr(session, "laps", None)
+    if laps is None or len(laps) == 0:
+        return pd.Series(dtype=float)
+    return laps.groupby("Driver")["LapNumber"].max()
+
+
 def _summarize_weather(session) -> dict[str, float]:
-    """Aggregate the per-lap weather stream into a few race-level numbers."""
+    """Aggregate the per-sample weather stream into race-level numbers."""
     empty = {
         "air_temp": float("nan"),
         "track_temp": float("nan"),
@@ -90,18 +122,17 @@ def _summarize_weather(session) -> dict[str, float]:
     return {
         "air_temp": float(weather["AirTemp"].mean()),
         "track_temp": float(weather["TrackTemp"].mean()),
-        # Rainfall is a boolean per sample; fraction of the session that was wet.
-        "rainfall": float(weather["Rainfall"].mean()),
+        "rainfall": float(weather["Rainfall"].mean()),  # fraction of wet samples
         "humidity": float(weather["Humidity"].mean()),
         "wind_speed": float(weather["WindSpeed"].mean()),
     }
 
 
-def _load_quali_positions(fastf1, season: int, rnd: int) -> dict[str, float]:
+def _quali_positions(fastf1, season: int, rnd: int) -> dict[str, float]:
     """Return {driver_abbreviation: qualifying_position} for a round."""
     try:
         quali = fastf1.get_session(season, rnd, "Q")
-        quali.load(laps=False, telemetry=False, weather=False, messages=False)
+        quali.load(telemetry=False, weather=False, messages=False)
     except Exception as exc:  # pragma: no cover - network/edge dependent
         logger.warning("No qualifying for %s round %s: %s", season, rnd, exc)
         return {}
@@ -112,22 +143,14 @@ def _load_quali_positions(fastf1, season: int, rnd: int) -> dict[str, float]:
 
 
 def fetch_season(season: int, *, force: bool = False) -> pd.DataFrame:
-    """Build (or load from cache) the canonical results table for one season.
-
-    Parameters
-    ----------
-    season:
-        Championship year.
-    force:
-        If True, ignore the parquet cache and re-fetch from FastF1.
-    """
+    """Build (or load from cache) the canonical results table for one season."""
     cache_path = RAW_DIR / f"results_{season}.parquet"
     if cache_path.exists() and not force:
         logger.info("Loading cached season %s from %s", season, cache_path)
         return pd.read_parquet(cache_path)
 
     fastf1 = _import_fastf1()
-    logger.info("Fetching season %s from FastF1 (first run is slow)", season)
+    logger.info("Fetching season %s from the timing feed (first run is slow)", season)
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
@@ -144,14 +167,24 @@ def fetch_season(season: int, *, force: bool = False) -> pd.DataFrame:
         except Exception as exc:  # pragma: no cover - season may be incomplete
             logger.warning("Skipping %s round %s: %s", season, rnd, exc)
             continue
+        if race.results is None or len(race.results) == 0:
+            continue
 
-        quali_pos = _load_quali_positions(fastf1, season, rnd)
+        quali_pos = _quali_positions(fastf1, season, rnd)
         weather = _summarize_weather(race)
+        laps = _completed_laps(race)
+        winner_laps = float(laps.max()) if len(laps) else float("nan")
+        logger.info("Loaded %s round %s: %s", season, rnd, event["EventName"])
 
         for _, res in race.results.iterrows():
             abbr = res["Abbreviation"]
-            status = str(res.get("Status", ""))
             finish = _safe_int(res.get("Position"))
+            driver_laps = float(laps.get(abbr, float("nan")))
+            if pd.notna(winner_laps) and pd.notna(driver_laps):
+                dnf = driver_laps < CLASSIFIED_LAP_FRACTION * winner_laps
+            else:
+                dnf = False
+            grid = quali_pos.get(abbr, float("nan"))
             rows.append(
                 {
                     "season": season,
@@ -162,15 +195,12 @@ def fetch_season(season: int, *, force: bool = False) -> pd.DataFrame:
                     "driver": abbr,
                     "driver_number": _safe_int(res.get("DriverNumber")),
                     "team": res.get("TeamName", ""),
-                    "grid_position": _safe_int(res.get("GridPosition")),
-                    "quali_position": quali_pos.get(abbr, float("nan")),
+                    "grid_position": grid,
+                    "quali_position": grid,
                     "finish_position": finish,
-                    "status": status,
-                    "points": float(res.get("Points", 0.0) or 0.0),
-                    # A DNF is any classified result that is not "Finished" and
-                    # not a lapped finish ("+N Lap(s)").
-                    "dnf": not (status == "Finished" or status.endswith("Lap")
-                                or status.endswith("Laps")),
+                    "status": "DNF" if dnf else "Classified",
+                    "points": _points_for_position(finish),
+                    "dnf": bool(dnf),
                     **weather,
                 }
             )
