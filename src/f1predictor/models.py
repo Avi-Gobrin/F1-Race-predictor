@@ -34,9 +34,16 @@ from .features import FEATURE_COLUMNS
 
 
 def _preprocessing_steps() -> list[tuple[str, object]]:
-    """Median imputation followed by standardization (shared by all models)."""
+    """Median imputation followed by standardization (shared by all models).
+
+    ``keep_empty_features`` matters for the first walk-forward split: when
+    training on 2023 alone, ``driver_track_finish`` is entirely missing (every
+    circuit has been visited at most once, so there is no prior history yet).
+    Keeping the column (filled with 0, then standardized to 0) preserves a
+    stable 13-feature design matrix across all splits.
+    """
     return [
-        ("impute", SimpleImputer(strategy="median")),
+        ("impute", SimpleImputer(strategy="median", keep_empty_features=True)),
         ("scale", StandardScaler()),
     ]
 
@@ -94,10 +101,13 @@ def fit_win_classifier(
         + [
             (
                 "clf",
+                # L1 (LASSO) logistic regression. In scikit-learn 1.8 a pure L1
+                # penalty is expressed as l1_ratio=1.0 and requires the saga
+                # solver; class_weight balances the rare winner label.
                 LogisticRegression(
-                    penalty="l1",
-                    solver="liblinear",
-                    max_iter=2000,
+                    solver="saga",
+                    l1_ratio=1.0,
+                    max_iter=5000,
                     class_weight="balanced",
                     random_state=cfg.random_state,
                 ),

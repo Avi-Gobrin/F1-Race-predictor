@@ -129,6 +129,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    import warnings
+
+    # Keep CLI output readable: silence scikit-learn convergence chatter.
+    from sklearn.exceptions import ConvergenceWarning
+
+    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+    warnings.filterwarnings("ignore", category=UserWarning, module="sklearn")
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     args = build_parser().parse_args(argv)
     args.func(args)

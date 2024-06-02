@@ -132,7 +132,9 @@ def _quali_positions(fastf1, season: int, rnd: int) -> dict[str, float]:
     """Return {driver_abbreviation: qualifying_position} for a round."""
     try:
         quali = fastf1.get_session(season, rnd, "Q")
-        quali.load(telemetry=False, weather=False, messages=False)
+        # Race-control messages are required for FastF1 to classify qualifying
+        # (without them the result Position comes back as NaN).
+        quali.load(telemetry=False, weather=False)
     except Exception as exc:  # pragma: no cover - network/edge dependent
         logger.warning("No qualifying for %s round %s: %s", season, rnd, exc)
         return {}
