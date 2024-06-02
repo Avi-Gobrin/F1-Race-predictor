@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# FastF1 / data caches (large, regenerated from the API)
+cache/
+data/raw/
+data/interim/
+*.parquet
+*.feather
+
+# Model artifacts
+artifacts/
+*.joblib
+*.pkl
+
+# Plots
+reports/figures/*.png
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
