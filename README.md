@@ -62,15 +62,71 @@ python -m f1predictor.cli build-dataset --seasons 2023 2024 2025 2026
 # Run the walk-forward evaluation
 python -m f1predictor.cli evaluate
 
+# Write all metrics CSVs and figures to reports/
+python -m f1predictor.cli report
+
 # Predict a single upcoming race
 python -m f1predictor.cli predict --season 2026 --round 9
 ```
 
-## Metrics
+## Results
 
-Race-winner prediction is hard: there are roughly twenty drivers per race, so a
-naive baseline that always picks the pole-sitter is a strong reference point.
-The classifier is reported against that baseline on each held-out season.
+Real timing data for 2023, 2024, 2025, and the partial 2026 season (five rounds
+run so far). Run `f1predict report` to regenerate the tables and figures in
+`reports/`.
+
+| Train on            | Predict | Winner acc | Podium prec@3 | Pole baseline | Log-loss |
+| ------------------- | ------- | ---------- | ------------- | ------------- | -------- |
+| 2023                | 2024    | 0.458      | 0.625         | 0.500         | 0.264    |
+| 2023, 2024          | 2025    | 0.333      | 0.736         | 0.667         | 0.882    |
+| 2023, 2024, 2025    | 2026*   | 0.400      | 0.533         | 0.800         | 0.258    |
+
+*2026 is a partial season (five rounds).
+
+The model lands around 40 to 46% race-winner accuracy and 53 to 74% podium
+precision, in line with the difficulty of the task. The honest headline is that
+**the pole-sitter baseline is very strong**: pole position converts to a win in
+half to four-fifths of races over this period, and the model is competitive with
+it rather than dominant. That is the expected result for modern F1, where grid
+position is overwhelmingly predictive.
+
+### What the model learns
+
+LASSO drives most coefficients to zero and keeps a sparse, sensible set
+(standardized, most recent split):
+
+| Feature              | Coefficient |
+| -------------------- | ----------- |
+| driver_form_points   | +1.01       |
+| grid_position        | -0.84       |
+| quali_position       | -0.84       |
+| driver_track_finish  | -0.06       |
+| (all others)         | 0           |
+
+Better recent form raises win probability; a better (lower) grid/qualifying
+position raises it too. Everything else is shrunk out.
+
+### Latent structure (factor analysis / PCA)
+
+Factor analysis of the features recovers four interpretable factors: a
+competitiveness/form factor (grid, qualifying, recent and team form), a
+temperature factor (air and track temperature against humidity and rain), a wind
+factor, and a reliability factor. The first two principal components explain
+about 57% of the variance and the first four about 74%.
+
+## Limitations
+
+Honest constraints worth stating, several forced by data availability:
+
+- **Grid uses qualifying as a proxy.** With Ergast/Jolpica unreachable, grid
+  position is taken from the qualifying classification, so grid penalties are
+  not reflected. Grid and qualifying are therefore identical columns here, which
+  is why they receive identical coefficients and factor loadings.
+- **Points exclude sprint and fastest-lap bonuses** (computed from the standard
+  finishing-position table), so season point totals run slightly below official.
+- **Reliability is a DNF-rate proxy**, not literal pit-stop counts (the timing
+  feed does not expose clean pit data without extra parsing).
+- **The pole baseline is hard to beat**, as the results above show.
 
 ## Repository layout
 
